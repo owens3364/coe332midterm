@@ -1,0 +1,11 @@
+version: "3"
+
+services:
+  serve:
+    build: .
+    ports:
+      - "5173:5173"
+    command: python iss_tracker.py
+  test:
+    build: .
+    command: pytest
