@@ -80,7 +80,8 @@ Endpoint responses are structured as follows
      "location": {
          "lat": number,
          "lon": number,
-         "altitude": number
+         "altitude": number,
+         "locstr": String
      }
   }
   ```
@@ -92,7 +93,8 @@ Endpoint responses are structured as follows
      "location": {
          "lat": number,
          "lon": number,
-         "altitude": number
+         "altitude": number,
+         "locstr": String
      }
   }
   ```
@@ -103,9 +105,9 @@ This code is offered in a Docker container so that it works reliably across syst
 
 1. Have Docker installed
 2. Set the working directory to this folder (`coe332midterm`)
-3. Running the service
+3. Running the service and tests
 
-   `docker-compose run serve`
+   `docker-compose up`
 
 4. Running the tests
 

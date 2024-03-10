@@ -1,8 +1,11 @@
+from astropy import coordinates as coord
+from astropy import units as u
+from astropy.time import Time
 from datetime import datetime, timedelta, timezone
 from flask import Flask, abort, request
+from geopy.geocoders import Nominatim
 import logging
 import math
-import pyproj
 import re
 import requests
 import socket
@@ -13,15 +16,10 @@ ISS_TRAJECTORY_DATA_URL = 'https://nasa-public-data.s3.amazonaws.com/iss-coords/
 ISS_TRAJECTORY_DATA_DATETIME_FORMAT = '%Y-%jT%H:%M:%S.%fZ'
 ISS_TRAJECTORY_DATA_DATETIME_REGEX = r"\d\d\d\d-\d\d\dT\d\d:\d\d:\d\d\.\d\d\dZ"
 
-COORDINATE_TRANSFORMER = pyproj.Transformer.from_crs({
-  'proj': 'geocent',
-  'ellps': 'WGS84',
-  'datum': 'WGS84',
-}, {
-  'proj': 'latlong',
-  'ellps': 'WGS84',
-  'datum': 'WGS84',
-})
+J2K_EPOCH = datetime(2000, 1, 1, 11, 58, 55, 816000, tzinfo=timezone.utc)
+EARTH_ROTATION_RATE = 360.0 / ((23.0 * 60.0 * 60.0) + (56 * 60) + 4.0916) # deg/s
+
+GEOCODER = Nominatim(user_agent='iss_tracker')
 
 Header = dict[str, str|datetime]
 Metadata = dict[str, str|datetime]
@@ -68,11 +66,11 @@ class NASADataManager:
     Returns:
       A boolean indicating if the data was fetched successfully
     """
-    if self.data_timestamp is not None and self.data_timestamp > datetime.now(timezone.utc) - timedelta(minutes=15):
+    if self.data_timestamp is not None and self.data_timestamp > datetime.utcnow() - timedelta(minutes=15):
       return True
     try:
       self.header, self.metadata, self.comments, self.data = self._fetch_data()
-      self.data_timestamp = datetime.now(timezone.utc)
+      self.data_timestamp = datetime.utcnow()
       return True
     except Exception:
       self.header = None
@@ -131,7 +129,7 @@ def get_most_current_epoch(data: EpochList) -> Epoch:
   Returns:
     entry (Epoch): The entry nearest the current time
   """
-  current_time = datetime.now(timezone.utc).timestamp()
+  current_time = datetime.utcnow().timestamp()
   lowest_delta = math.inf
   d_with_lowest_delta = None
   for d in data:
@@ -148,12 +146,61 @@ def speed(epoch: Epoch) -> float:
   Args:
     epoch (Epoch): The entry to calculate the ISS speed from
   Returns:
-    result (float): The speed at that entry
+    result (float): The speed at that entry (km/s)
   """
   return math.sqrt(epoch['dx'] ** 2 + epoch['dy'] ** 2 + epoch['dz'] ** 2)
 
-def location(epoch: Epoch) -> tuple[float, float, float]:
-  return COORDINATE_TRANSFORMER.transform(epoch['x'] * 1000, epoch['y'] * 1000, epoch['z'] * 1000, radians=False)
+def astropy_lla_conversion(epoch: Epoch) -> tuple[float, float, float]:
+  """
+  Uses astropy to convert the xyz epoch coordinates to lla coordinates
+
+  Agrs:
+    epoch (Epoch): The entry to calculate the lla coordinates from
+  Returns:
+    result (tuple[float, float, float]): The lat, lon, and altitude in degrees and km
+  """
+  now = Time(epoch['timestamp'].isoformat(), scale='utc')
+  gcrs = coord.GCRS(coord.CartesianRepresentation(epoch['x'], epoch['y'], epoch['z'], unit=u.km), obstime = now)
+  itrs = gcrs.transform_to(coord.ITRS(obstime = now))
+  loc = coord.EarthLocation(*itrs.cartesian.xyz)
+  return (loc.lat.to_value(), loc.lon.to_value(), loc.height.to_value())
+
+def fetch_location_str(lla: tuple[float, float, float]) -> str:
+  """
+  Takes the LLA coordinates and attempts to convert them to a meaningful location string, like a city
+  Returns an empty string if unable to do so and logs a warning if an exception is thrown
+
+  Args:
+    lla (tuple[float, float, float]): The LLA coordinate to find a location string for
+  Returns:
+    result (str): The location string, if any, or an empty string
+  """
+  search_str = f'{lla[0]}, {lla[1]}'
+  locstr = ''
+  try:
+    geoloc = GEOCODER.reverse(search_str, language='en', zoom=10)
+    if geoloc is not None:
+      if isinstance(geoloc.address, str):
+        locstr = geoloc.address
+      else: locstr = f'{geoloc.address.city}, {geoloc.address.municipality}, {geoloc.address.country}'
+  except Exception as e:
+    logging.warning(e)
+    locstr = ''
+  return locstr
+
+def location(epoch: Epoch) -> tuple[float, float, float, str]:
+  """
+  Converts the XYZ position of the ISS to LLA coordinates
+  Also returns a string described the city nearest to the ISS, if possible
+  If a city near the ISS could not be identified, the location string will be empty ('')
+
+  Args:
+    epoch (Epoch): The entry to find the ISS LLA coordinates and then nearest city from
+  Returns:
+    result (tuple[float, float, float, str]): The lat, lon, altitude in degrees and km, and the string name of the nearest city
+  """
+  lla = astropy_lla_conversion(epoch)
+  return (*lla, fetch_location_str(lla))
 
 class App:
   app: Flask
@@ -172,6 +219,13 @@ class App:
     self.app.add_url_rule('/now', view_func=self.now)
 
   def run(self):
+    """
+    Runs the flask app in debug mode on port 5173
+    Args:
+      None
+    Returns:
+      None
+    """
     self.app.run(debug=True, host='0.0.0.0', port=5173)
 
   def get_data(self, data: str = 'epochs') -> Header|Metadata|Comments|EpochList:
@@ -333,13 +387,14 @@ class App:
         'lat': the geodetic latitude of the ISS in degrees,
         'lon': the geodetic longitude of the ISS in degrees,
         'altitude': the altitude of the ISS in km,
+        'locstr': the city nearest the ISS (if identifiable, otherwise empty string),
       }
     """
     epoch = self.specific_epoch(epoch)
     if epoch['epoch'] is None:
       abort(400, 'Specified epoch does not exist.')
     loc = location(epoch['epoch'])
-    return {'lat': loc[0], 'lon': loc[1], 'altitude': loc[2]}
+    return {'lat': loc[0], 'lon': loc[1], 'altitude': loc[2], 'locstr': loc[3]}
 
   def now(self) -> Epoch:
     """
@@ -359,6 +414,7 @@ class App:
         'lat': loc[0],
         'lon': loc[1],
         'altitude': loc[2],
+        'locstr': loc[3]
       },
     }
 
