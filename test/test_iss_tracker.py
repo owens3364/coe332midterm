@@ -260,6 +260,12 @@ def test_speed():
   entry = gen_random_formatted_data_entry()
   assert it.speed(entry) == math.sqrt(entry['dx'] ** 2 + entry['dy'] ** 2 + entry['dz'] ** 2)
 
+@patch.object(it.Time, '__init__', side_effect=Exception)
+@patch('coe332midterm.iss_tracker.abort')
+def test_astropy_lla_conversion_aborts_on_failure(mock_abort, _):
+  it.astropy_lla_conversion(gen_random_formatted_data_entry())
+  mock_abort.assert_called_once_with(500, 'An error occurred converting the epochc coordinates to LLA coordinates. This error will be logged.')
+
 @patch.object(it.GEOCODER, 'reverse', side_effect=Exception)
 def test_fetch_location_str_searches_correctly_and_handles_exception(mock_reverse):
   lla = gen_random_lla_coords()

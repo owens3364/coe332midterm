@@ -159,11 +159,15 @@ def astropy_lla_conversion(epoch: Epoch) -> tuple[float, float, float]:
   Returns:
     result (tuple[float, float, float]): The lat, lon, and altitude in degrees and km
   """
-  now = Time(epoch['timestamp'].isoformat(), scale='utc')
-  gcrs = coord.GCRS(coord.CartesianRepresentation(epoch['x'], epoch['y'], epoch['z'], unit=u.km), obstime = now)
-  itrs = gcrs.transform_to(coord.ITRS(obstime = now))
-  loc = coord.EarthLocation(*itrs.cartesian.xyz)
-  return (loc.lat.to_value(), loc.lon.to_value(), loc.height.to_value())
+  try:
+    now = Time(epoch['timestamp'].isoformat(), scale='utc')
+    gcrs = coord.GCRS(coord.CartesianRepresentation(epoch['x'], epoch['y'], epoch['z'], unit=u.km), obstime = now)
+    itrs = gcrs.transform_to(coord.ITRS(obstime = now))
+    loc = coord.EarthLocation(*itrs.cartesian.xyz)
+    return (loc.lat.to_value(), loc.lon.to_value(), loc.height.to_value())
+  except Exception as e:
+    logging.error(e)
+    abort(500, 'An error occurred converting the epochc coordinates to LLA coordinates. This error will be logged.')
 
 def fetch_location_str(lla: tuple[float, float, float]) -> str:
   """
